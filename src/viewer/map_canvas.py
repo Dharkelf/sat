@@ -7,7 +7,7 @@ Supports two interaction modes:
 import logging
 
 from PyQt6.QtCore import QPoint, QRect, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QImage, QMouseEvent, QPen, QPixmap, QWheelEvent
+from PyQt6.QtGui import QColor, QImage, QMouseEvent, QPainter, QPen, QPixmap, QWheelEvent
 from PyQt6.QtWidgets import (
     QGraphicsPixmapItem,
     QGraphicsRectItem,
@@ -52,6 +52,7 @@ class MapCanvas(QGraphicsView):
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setBackgroundBrush(Qt.GlobalColor.darkGray)
+        self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
 
         self._base_item: QGraphicsPixmapItem | None = None
         self._overlay_item: QGraphicsPixmapItem | None = None

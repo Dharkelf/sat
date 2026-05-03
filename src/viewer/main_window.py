@@ -81,21 +81,10 @@ class _DownloadWorker(QThread):
                 self.error.emit("No Sentinel-2 scenes found for the AOI and cloud filter.")
                 return
 
-            # Only download scenes that are newer than what we already have
-            latest_local = self._catalog.latest_sensing_dt("sentinel2")
-            new_scenes = []
-            for sc in scenes:
-                dt_str = sc.get("properties", {}).get("datetime", "")
-                if dt_str:
-                    import pandas as pd
-                    sc_dt = pd.Timestamp(dt_str, tz="UTC").to_pydatetime()
-                    if latest_local is None or sc_dt > latest_local:
-                        new_scenes.append(sc)
-                    elif not self._catalog.is_downloaded(sc["id"]):
-                        new_scenes.append(sc)
+            # Skip scenes already present in the catalog
+            new_scenes = [sc for sc in scenes if not self._catalog.is_downloaded(sc["id"])]
 
             if not new_scenes:
-                logger.info("All found scenes already downloaded and current — skipping")
                 self.progress.emit(1, 1, "Already up to date.")
                 existing = self._catalog.list_scenes("sentinel2")
                 self.finished.emit(existing.to_dict("records"))
