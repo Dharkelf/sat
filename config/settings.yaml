@@ -1,0 +1,48 @@
+app:
+  name: "SAT — Satellite Change Detection"
+  log_level: "INFO"
+
+aoi:
+  name: "Vienna"
+  # WGS84 bounding box: west, south, east, north
+  bbox: [16.18, 48.11, 16.58, 48.32]
+
+sentinel2:
+  collection: "SENTINEL-2"
+  product_type: "S2MSI2A"          # Level-2A surface reflectance
+  cloud_cover_max: 30               # percent
+  bands:
+    blue: "B02"
+    green: "B03"
+    red: "B04"
+    nir: "B08"
+  resolution_m: 10
+  max_scenes: 2
+  search_days_back: 45              # look-back window for scene discovery
+
+sentinel1:
+  collection: "SENTINEL-1"
+  product_type: "GRD"
+  max_scenes: 2
+  search_days_back: 14
+
+storage:
+  raw_dir: "data/raw"
+  processed_dir: "data/processed"
+  catalog_file: "data/catalog.parquet"
+  max_size_gb: 2.0                  # hard cap for all satellite data on disk
+  keep_scenes: 2                    # max scenes to retain per sensor (current + previous)
+
+cdse:
+  token_url: "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
+  catalog_base: "https://catalogue.dataspace.copernicus.eu/stac"
+  odata_base: "https://catalogue.dataspace.copernicus.eu/odata/v1"
+  download_base: "https://download.dataspace.copernicus.eu/odata/v1"
+  token_refresh_margin_s: 120       # refresh token this many seconds before expiry
+
+display:
+  stretch_low_pct: 2
+  stretch_high_pct: 98
+  max_display_pixels: 4096          # downsample if either dimension exceeds this
+  change_threshold: 0.03            # normalized reflectance diff to flag as change
+  change_amplify: 5.0               # amplification factor for change overlay
