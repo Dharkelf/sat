@@ -1,18 +1,12 @@
 """Tests for the ingest module (auth, search, download helpers, catalog)."""
-import json
-import time
-from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-import pandas as pd
 import pytest
 
 from src.ingest.auth import CDSEAuth
-from src.ingest.catalog import SceneCatalog
 from src.ingest.download import extract_uuid
 from src.ingest.search import SceneSearcher, _cloud, _product_type
-
 
 # ---------------------------------------------------------------------------
 # auth

@@ -6,9 +6,9 @@ Maintains a Parquet index of downloaded scenes and enforces:
 """
 import logging
 import shutil
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import pandas as pd
 
@@ -45,7 +45,7 @@ class SceneCatalog:
         result = df[df["sensor"] == sensor].sort_values("sensing_dt", ascending=False)
         return result.reset_index(drop=True)
 
-    def latest_sensing_dt(self, sensor: str) -> Optional[datetime]:
+    def latest_sensing_dt(self, sensor: str) -> datetime | None:
         """Return the most recent sensing datetime on disk, or None."""
         df = self.list_scenes(sensor)
         if df.empty:
@@ -79,7 +79,7 @@ class SceneCatalog:
             "sensor": sensor,
             "sensing_dt": sensing_dt,
             "cloud_cover": scene.get("properties", {}).get("eo:cloud_cover", float("nan")),
-            "downloaded_at": pd.Timestamp(datetime.now(tz=timezone.utc)),
+            "downloaded_at": pd.Timestamp(datetime.now(tz=UTC)),
             "band_paths": json.dumps(rel_paths),
             "size_mb": round(size_mb, 1),
         }])

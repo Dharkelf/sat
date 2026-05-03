@@ -14,12 +14,11 @@ Layout:
 """
 import json
 import logging
-from datetime import timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
-from PyQt6.QtCore import QThread, Qt, pyqtSignal
+from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtGui import QImage
 from PyQt6.QtWidgets import (
     QHBoxLayout,
@@ -102,7 +101,6 @@ class _DownloadWorker(QThread):
                 self.finished.emit(existing.to_dict("records"))
                 return
 
-            raw_dir = Path(self._settings["storage"]["raw_dir"])
             for i, scene in enumerate(new_scenes):
                 self.progress.emit(i, len(new_scenes), f"Downloading scene {i+1}/{len(new_scenes)}…")
 
@@ -137,14 +135,14 @@ class MainWindow(QMainWindow):
         self._downloader = downloader
         self._catalog = catalog
 
-        self._bands_new: Optional[dict[str, np.ndarray]] = None
-        self._bands_old: Optional[dict[str, np.ndarray]] = None
+        self._bands_new: dict[str, np.ndarray] | None = None
+        self._bands_old: dict[str, np.ndarray] | None = None
         self._loader = BandLoader(
             aoi_bbox_wgs84=settings["aoi"]["bbox"],
             max_display_pixels=settings["display"]["max_display_pixels"],
         )
         self._current_mode = "rgb"
-        self._worker: Optional[_DownloadWorker] = None
+        self._worker: _DownloadWorker | None = None
 
         self._build_ui()
         self._try_load_cached()
@@ -242,9 +240,6 @@ class MainWindow(QMainWindow):
 
     def _load_scenes(self, records: list[dict[str, Any]]) -> None:
         raw_dir = Path(self._settings["storage"]["raw_dir"])
-        s2_cfg = self._settings["sentinel2"]
-        bands_cfg = s2_cfg["bands"]
-
         sorted_records = sorted(records, key=lambda r: r.get("sensing_dt", ""), reverse=True)
         if not sorted_records:
             return

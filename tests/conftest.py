@@ -1,5 +1,4 @@
 """Shared pytest fixtures for ingest and raster tests."""
-import json
 from pathlib import Path
 from typing import Any
 

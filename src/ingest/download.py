@@ -5,8 +5,9 @@ storage budget.  Only the 10m RGB+NIR bands are fetched (~20-40 MB per band).
 """
 import logging
 import re
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any
 
 import httpx
 
@@ -57,7 +58,7 @@ class SceneDownloader:
         self,
         scene: dict[str, Any],
         bands: list[str],
-        progress_cb: Optional[ProgressCallback] = None,
+        progress_cb: ProgressCallback | None = None,
     ) -> dict[str, Path]:
         """Download 10m JP2 files for the given bands.  Returns band→local_path."""
         uuid = extract_uuid(scene)

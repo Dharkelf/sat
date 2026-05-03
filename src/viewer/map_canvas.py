@@ -1,6 +1,5 @@
 """Zoomable/pannable raster canvas built on QGraphicsView."""
 import logging
-from typing import Optional
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QImage, QPixmap, QWheelEvent
@@ -31,8 +30,8 @@ class MapCanvas(QGraphicsView):
         self.setRenderHint(self.renderHints())  # keep default (no smooth scaling on large rasters)
         self.setBackgroundBrush(Qt.GlobalColor.darkGray)
 
-        self._base_item: Optional[QGraphicsPixmapItem] = None
-        self._overlay_item: Optional[QGraphicsPixmapItem] = None
+        self._base_item: QGraphicsPixmapItem | None = None
+        self._overlay_item: QGraphicsPixmapItem | None = None
         self._zoom_level: float = 1.0
 
     # ------------------------------------------------------------------
@@ -51,7 +50,7 @@ class MapCanvas(QGraphicsView):
         self._zoom_level = 1.0
         logger.debug("Base image set: %dx%d", image.width(), image.height())
 
-    def set_overlay(self, image: Optional[QImage], opacity: float = 0.55) -> None:
+    def set_overlay(self, image: QImage | None, opacity: float = 0.55) -> None:
         """Set or clear the semi-transparent overlay (change detection, etc.)."""
         if self._overlay_item is not None:
             self._scene.removeItem(self._overlay_item)
@@ -72,7 +71,7 @@ class MapCanvas(QGraphicsView):
     # Events
     # ------------------------------------------------------------------
 
-    def wheelEvent(self, event: QWheelEvent) -> None:  # type: ignore[override]
+    def wheelEvent(self, event: QWheelEvent) -> None:  # type: ignore[override]  # noqa: N802
         delta = event.angleDelta().y()
         factor = _ZOOM_FACTOR if delta > 0 else 1.0 / _ZOOM_FACTOR
         new_zoom = self._zoom_level * factor

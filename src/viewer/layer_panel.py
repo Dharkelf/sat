@@ -1,13 +1,11 @@
 """Right-side panel with layer toggle buttons and scene info display."""
 import logging
-from typing import Callable, Optional
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QButtonGroup,
     QFrame,
     QLabel,
-    QPushButton,
     QRadioButton,
     QVBoxLayout,
     QWidget,
@@ -23,7 +21,7 @@ class LayerPanel(QWidget):
 
     layer_changed = pyqtSignal(str)
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setFixedWidth(180)
 

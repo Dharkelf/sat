@@ -1,6 +1,6 @@
 """Sentinel scene discovery via CDSE STAC API."""
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -65,7 +65,7 @@ class SceneSearcher:
         days_back: int,
         limit: int,
     ) -> list[dict[str, Any]]:
-        end = datetime.now(tz=timezone.utc)
+        end = datetime.now(tz=UTC)
         start = end - timedelta(days=days_back)
         params: dict[str, Any] = {
             "bbox": ",".join(str(v) for v in bbox),

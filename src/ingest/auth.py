@@ -2,7 +2,6 @@
 import logging
 import time
 from dataclasses import dataclass
-from typing import Optional
 
 import httpx
 
@@ -29,7 +28,7 @@ class CDSEAuth:
         self._password = password
         self._token_url = token_url
         self._refresh_margin_s = refresh_margin_s
-        self._token: Optional[_TokenInfo] = None
+        self._token: _TokenInfo | None = None
 
     def get_token(self) -> str:
         if self._token is None or time.time() >= self._token.expires_at - self._refresh_margin_s:

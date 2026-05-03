@@ -5,7 +5,6 @@ import pytest
 from src.raster.change import compute_change, multi_band_change
 from src.raster.loader import BandLoader, _stretch, _to_uint8
 
-
 # ---------------------------------------------------------------------------
 # Stretch / uint8 conversion
 # ---------------------------------------------------------------------------
@@ -101,7 +100,6 @@ class TestComputeChange:
 
 class TestMultiBandChange:
     def test_multi_band_output_nonnegative(self, synthetic_bands):
-        import copy
         bands_shifted = {k: np.clip(v + 0.1, 0, 1) for k, v in synthetic_bands.items()}
         result = multi_band_change(bands_shifted, synthetic_bands)
         assert (result >= 0).all()
