@@ -1,4 +1,17 @@
-"""Sentinel scene discovery via CDSE STAC API."""
+"""Sentinel scene discovery via CDSE OData API.
+
+CDSE retired the STAC /collections/SENTINEL-2 endpoint; OData v1 is the
+stable alternative and supports server-side filtering including cloud cover.
+
+Returned items are normalised to a STAC-like dict so all downstream modules
+(catalog, download, viewer) need no changes:
+  {
+    "id":         product name without .SAFE suffix,
+    "properties": {"datetime": ISO-str, "eo:cloud_cover": float, "productType": str},
+    "assets":     {"PRODUCT": {"href": "<download-url>"}},
+    "links":      [],
+  }
+"""
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -9,13 +22,23 @@ from src.ingest.auth import CDSEAuth
 
 logger = logging.getLogger(__name__)
 
+_ODATA_BASE = "https://catalogue.dataspace.copernicus.eu/odata/v1"
+_DOWNLOAD_BASE = "https://download.dataspace.copernicus.eu/odata/v1"
+
+# AOI as WKT polygon — derived from bbox at search time
+_AOI_WKT = "POLYGON(({w} {s},{e} {s},{e} {n},{w} {n},{w} {s}))"
+
 
 class SceneSearcher:
-    """Queries CDSE STAC for the most recent Sentinel scenes covering the AOI."""
+    """Queries CDSE OData for the most recent Sentinel scenes covering the AOI.
+
+    Results are normalised to a STAC-compatible dict so downstream code
+    (catalog.record, download.extract_uuid, viewer) is unchanged.
+    """
 
     def __init__(self, auth: CDSEAuth, catalog_base: str) -> None:
+        # catalog_base kept for API compatibility; OData URL is fixed
         self._auth = auth
-        self._base = catalog_base.rstrip("/")
 
     def search_sentinel2(
         self,
@@ -25,21 +48,28 @@ class SceneSearcher:
         days_back: int,
     ) -> list[dict[str, Any]]:
         """Return up to max_scenes S2 L2A items, newest first, under cloud_max%."""
-        items = self._fetch(
-            collection="SENTINEL-2",
-            bbox=bbox,
-            days_back=days_back,
-            limit=50,
+        w, s, e, n = bbox
+        aoi_wkt = _AOI_WKT.format(w=w, s=s, e=e, n=n)
+        start_dt = _iso(datetime.now(tz=UTC) - timedelta(days=days_back))
+
+        filter_str = (
+            f"Collection/Name eq 'SENTINEL-2' "
+            f"and OData.CSC.Intersects(area=geography'SRID=4326;{aoi_wkt}') "
+            f"and Attributes/OData.CSC.StringAttribute/any("
+            f"  att:att/Name eq 'productType' "
+            f"  and att/OData.CSC.StringAttribute/Value eq 'S2MSI2A') "
+            f"and Attributes/OData.CSC.DoubleAttribute/any("
+            f"  att:att/Name eq 'cloudCover' "
+            f"  and att/OData.CSC.DoubleAttribute/Value lt {cloud_max}) "
+            f"and ContentDate/Start gt {start_dt}"
         )
-        filtered = [
-            it for it in items
-            if _cloud(it) <= cloud_max and _product_type(it) == "S2MSI2A"
-        ]
+        raw = self._odata_search(filter_str, top=max_scenes * 3)
+        items = [_normalise(r) for r in raw]
         logger.info(
-            "S2 search: %d total, %d ≤%.0f%% cloud → keeping %d",
-            len(items), len(filtered), cloud_max, min(max_scenes, len(filtered)),
+            "S2 OData search: %d results ≤%.0f%% cloud → keeping %d",
+            len(items), cloud_max, min(max_scenes, len(items)),
         )
-        return filtered[:max_scenes]
+        return items[:max_scenes]
 
     def search_sentinel1(
         self,
@@ -48,39 +78,78 @@ class SceneSearcher:
         days_back: int,
     ) -> list[dict[str, Any]]:
         """Return up to max_scenes S1 GRD items, newest first."""
-        items = self._fetch(
-            collection="SENTINEL-1",
-            bbox=bbox,
-            days_back=days_back,
-            limit=20,
-        )
-        filtered = [it for it in items if "GRD" in _product_type(it)]
-        logger.info("S1 search: %d total, %d GRD → keeping %d", len(items), len(filtered), min(max_scenes, len(filtered)))
-        return filtered[:max_scenes]
+        w, s, e, n = bbox
+        aoi_wkt = _AOI_WKT.format(w=w, s=s, e=e, n=n)
+        start_dt = _iso(datetime.now(tz=UTC) - timedelta(days=days_back))
 
-    def _fetch(
-        self,
-        collection: str,
-        bbox: list[float],
-        days_back: int,
-        limit: int,
-    ) -> list[dict[str, Any]]:
-        end = datetime.now(tz=UTC)
-        start = end - timedelta(days=days_back)
+        filter_str = (
+            f"Collection/Name eq 'SENTINEL-1' "
+            f"and OData.CSC.Intersects(area=geography'SRID=4326;{aoi_wkt}') "
+            f"and Attributes/OData.CSC.StringAttribute/any("
+            f"  att:att/Name eq 'productType' "
+            f"  and att/OData.CSC.StringAttribute/Value eq 'GRD') "
+            f"and ContentDate/Start gt {start_dt}"
+        )
+        raw = self._odata_search(filter_str, top=max_scenes * 2)
+        items = [_normalise(r) for r in raw]
+        logger.info("S1 OData search: %d results → keeping %d", len(items), min(max_scenes, len(items)))
+        return items[:max_scenes]
+
+    def _odata_search(self, filter_str: str, top: int) -> list[dict[str, Any]]:
         params: dict[str, Any] = {
-            "bbox": ",".join(str(v) for v in bbox),
-            "datetime": f"{_iso(start)}/{_iso(end)}",
-            "limit": limit,
-            "sortby": "-properties.datetime",
+            "$filter": filter_str,
+            "$orderby": "ContentDate/Start desc",
+            "$top": top,
+            "$expand": "Attributes",
         }
-        url = f"{self._base}/collections/{collection}/items"
-        resp = httpx.get(url, params=params, headers=self._auth.auth_header(), timeout=30.0)
+        resp = httpx.get(
+            f"{_ODATA_BASE}/Products",
+            params=params,
+            headers=self._auth.auth_header(),
+            timeout=30.0,
+        )
         resp.raise_for_status()
-        return resp.json().get("features", [])
+        return resp.json().get("value", [])
+
+
+# ---------------------------------------------------------------------------
+# Normalisation helpers
+# ---------------------------------------------------------------------------
+
+def _normalise(raw: dict[str, Any]) -> dict[str, Any]:
+    """Convert an OData Products item to a STAC-compatible dict."""
+    uuid: str = raw["Id"]
+    name: str = raw["Name"]
+    scene_id = name[:-5] if name.endswith(".SAFE") else name
+
+    attrs = {a["Name"]: a.get("Value") for a in raw.get("Attributes", [])}
+    cloud = float(attrs.get("cloudCover", 100.0))
+    product_type = str(attrs.get("processingLevel", attrs.get("productType", "")))
+
+    # Derive product type from name if attribute missing (S2MSI2A → productType)
+    if "MSI" in name:
+        product_type = "S2MSI" + name.split("_")[1][3:]  # e.g. S2MSI2A
+
+    return {
+        "id": scene_id,
+        "properties": {
+            "datetime": raw["ContentDate"]["Start"],
+            "eo:cloud_cover": cloud,
+            "productType": product_type,
+        },
+        "assets": {
+            "PRODUCT": {
+                "href": f"{_DOWNLOAD_BASE}/Products('{uuid}')/$value",
+            }
+        },
+        "links": [
+            {"rel": "derived_from", "href": f"{_ODATA_BASE}/Products('{uuid}')"}
+        ],
+    }
 
 
 def _iso(dt: datetime) -> str:
-    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 
 def _cloud(item: dict[str, Any]) -> float:

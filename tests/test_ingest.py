@@ -72,38 +72,36 @@ class TestSceneSearcher:
         auth.auth_header.return_value = {}
         return SceneSearcher(auth=auth, catalog_base="https://catalog.example.com")
 
-    def _mock_features(self, n: int, cloud: float = 10.0) -> list[dict[str, Any]]:
-        return [
-            {
-                "id": f"scene_{i}",
-                "properties": {
-                    "datetime": f"2025-01-{i+1:02d}T10:00:00Z",
-                    "eo:cloud_cover": cloud,
-                    "productType": "S2MSI2A",
-                },
-                "assets": {},
-                "links": [],
-            }
-            for i in range(n)
-        ]
+    def _odata_item(self, i: int, cloud: float = 10.0) -> dict[str, Any]:
+        """Minimal OData Products item as returned by catalogue.dataspace.copernicus.eu."""
+        return {
+            "Id": f"aaaaaaaa-0000-0000-0000-{i:012d}",
+            "Name": f"S2A_MSIL2A_202501{i+1:02d}T100000_N0510_R122_T33UXP_20250101T130000.SAFE",
+            "ContentDate": {"Start": f"2025-01-{i+1:02d}T10:00:00.000Z"},
+            "Attributes": [
+                {"Name": "cloudCover", "Value": cloud},
+                {"Name": "productType", "Value": "S2MSI2A"},
+            ],
+        }
 
-    def test_filters_by_cloud_cover(self):
+    def test_normalises_odata_to_stac(self):
         searcher = self._make_searcher()
-        features = self._mock_features(5, cloud=10.0) + self._mock_features(3, cloud=50.0)
         with patch("src.ingest.search.httpx.get") as mock_get:
-            mock_get.return_value.json.return_value = {"features": features}
+            mock_get.return_value.json.return_value = {"value": [self._odata_item(0, 10.0)]}
             mock_get.return_value.raise_for_status = MagicMock()
             result = searcher.search_sentinel2(
-                bbox=[16.0, 48.0, 17.0, 49.0], max_scenes=10, cloud_max=30.0, days_back=30
+                bbox=[16.0, 48.0, 17.0, 49.0], max_scenes=5, cloud_max=30.0, days_back=30
             )
-        assert all(_cloud(it) <= 30.0 for it in result)
-        assert len(result) == 5
+        assert len(result) == 1
+        assert "properties" in result[0]
+        assert "assets" in result[0]
+        assert _cloud(result[0]) == pytest.approx(10.0)
 
     def test_limits_to_max_scenes(self):
         searcher = self._make_searcher()
-        features = self._mock_features(10, cloud=5.0)
+        raw_items = [self._odata_item(i, 5.0) for i in range(10)]
         with patch("src.ingest.search.httpx.get") as mock_get:
-            mock_get.return_value.json.return_value = {"features": features}
+            mock_get.return_value.json.return_value = {"value": raw_items}
             mock_get.return_value.raise_for_status = MagicMock()
             result = searcher.search_sentinel2(
                 bbox=[16.0, 48.0, 17.0, 49.0], max_scenes=2, cloud_max=30.0, days_back=30

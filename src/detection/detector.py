@@ -6,7 +6,6 @@ determined by confidence against thresholds in settings.yaml.
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 
@@ -42,7 +41,7 @@ class ConstructionDetector:
     def __init__(self, model_path: Path, conf_threshold: float = 0.25) -> None:
         self._model_path = model_path
         self._conf = conf_threshold
-        self._model: Optional[object] = None
+        self._model: object | None = None
 
     def is_trained(self) -> bool:
         return self._model_path.exists()

@@ -5,7 +5,6 @@ Supports two interaction modes:
   - draw (training): click top-left then bottom-right to define a ROI
 """
 import logging
-from typing import Optional
 
 from PyQt6.QtCore import QPoint, QRect, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QImage, QMouseEvent, QPen, QPixmap, QWheelEvent
@@ -54,15 +53,15 @@ class MapCanvas(QGraphicsView):
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setBackgroundBrush(Qt.GlobalColor.darkGray)
 
-        self._base_item: Optional[QGraphicsPixmapItem] = None
-        self._overlay_item: Optional[QGraphicsPixmapItem] = None
+        self._base_item: QGraphicsPixmapItem | None = None
+        self._overlay_item: QGraphicsPixmapItem | None = None
         self._detection_items: list[QGraphicsRectItem] = []
-        self._rubber_band: Optional[QGraphicsRectItem] = None
+        self._rubber_band: QGraphicsRectItem | None = None
         self._zoom_level: float = 1.0
 
         # draw-mode state
         self._draw_mode: bool = False
-        self._draw_start: Optional[QPoint] = None   # scene coordinates
+        self._draw_start: QPoint | None = None   # scene coordinates
 
     # ------------------------------------------------------------------
     # Public API — image layers
@@ -79,7 +78,7 @@ class MapCanvas(QGraphicsView):
         self._zoom_level = 1.0
         logger.debug("Base image set: %dx%d", image.width(), image.height())
 
-    def set_overlay(self, image: Optional[QImage], opacity: float = 0.55) -> None:
+    def set_overlay(self, image: QImage | None, opacity: float = 0.55) -> None:
         if self._overlay_item is not None:
             self._scene.removeItem(self._overlay_item)
             self._overlay_item = None

@@ -36,7 +36,7 @@ storage:
 cdse:
   token_url: "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
   catalog_base: "https://catalogue.dataspace.copernicus.eu/stac"
-  odata_base: "https://catalogue.dataspace.copernicus.eu/odata/v1"
+  odata_base: "https://download.dataspace.copernicus.eu/odata/v1"
   download_base: "https://download.dataspace.copernicus.eu/odata/v1"
   token_refresh_margin_s: 120       # refresh token this many seconds before expiry
 

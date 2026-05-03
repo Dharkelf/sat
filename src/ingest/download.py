@@ -1,21 +1,50 @@
-"""Download individual S2 band JP2 files via CDSE OData Node API.
+"""Download Sentinel-2 bands via Sentinel Hub Processing API.
 
-Uses band-selective download (not full product zip) to stay within the 2 GB
-storage budget.  Only the 10m RGB+NIR bands are fetched (~20-40 MB per band).
+Replaces the broken CDSE OData Node API / Product ZIP endpoints (DAT-ZIP-104,
+DAT-ZIP-111) with the Sentinel Hub Processing API which uses the same CDSE
+OAuth token and returns an AOI-clipped multi-band GeoTIFF directly.
+
+Returned band files are single-band UINT16 GeoTIFFs where value ÷ 10000 =
+surface reflectance — matching the scale factor in BandLoader.
 """
 import logging
+import math
 import re
+import tempfile
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import httpx
+import rasterio
 
 from src.ingest.auth import CDSEAuth
 
 logger = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[int, int, str], None]
+
+_SH_URL = "https://sh.dataspace.copernicus.eu/api/v1/process"
+
+# Order of bands in the GeoTIFF returned by _EVALSCRIPT (rasterio band index = position + 1)
+_BAND_ORDER = ["B04", "B03", "B02", "B08"]
+
+_EVALSCRIPT = """//VERSION=3
+function setup() {
+  return {
+    input: [{ bands: ["B02","B03","B04","B08"], units: "REFLECTANCE" }],
+    output: { bands: 4, sampleType: "UINT16" }
+  };
+}
+function evaluatePixel(sample) {
+  return [
+    Math.round(sample.B04 * 10000),
+    Math.round(sample.B03 * 10000),
+    Math.round(sample.B02 * 10000),
+    Math.round(sample.B08 * 10000)
+  ];
+}"""
 
 
 def extract_uuid(scene: dict[str, Any]) -> str:
@@ -28,7 +57,6 @@ def extract_uuid(scene: dict[str, Any]) -> str:
         m = re.search(r"Products\('([0-9a-f\-]{36})'\)", link.get("href", ""), re.I)
         if m:
             return m.group(1)
-    # Some items expose the UUID directly in the id field
     item_id = scene.get("id", "")
     if re.fullmatch(r"[0-9a-f\-]{36}", item_id, re.I):
         return item_id
@@ -36,121 +64,166 @@ def extract_uuid(scene: dict[str, Any]) -> str:
 
 
 class SceneDownloader:
-    """Downloads individual band files using the CDSE OData Node API.
+    """Downloads Sentinel-2 bands via the Sentinel Hub Processing API.
 
-    Navigates the product tree to locate specific JP2 files instead of
-    downloading the full ~800 MB product zip.
+    The SH Processing API clips to the AOI, returns a multi-band GeoTIFF,
+    and authenticates with the same CDSE OAuth token — no Node API needed.
+    Each band is saved as a separate single-band GeoTIFF so BandLoader is
+    unchanged.
     """
 
     def __init__(
         self,
         auth: CDSEAuth,
-        odata_base: str,
-        download_base: str,
+        odata_base: str,    # unused; kept for call-site compatibility
+        download_base: str,  # unused; kept for call-site compatibility
         raw_dir: Path,
+        bbox: list[float] | None = None,
+        sh_url: str = _SH_URL,
     ) -> None:
         self._auth = auth
-        self._odata = odata_base.rstrip("/")
-        self._dl = download_base.rstrip("/")
         self._raw = raw_dir
+        self._bbox = bbox      # AOI as [west, south, east, north] WGS84
+        self._sh_url = sh_url
 
     def download_s2_bands(
         self,
         scene: dict[str, Any],
         bands: list[str],
         progress_cb: ProgressCallback | None = None,
+        bbox: list[float] | None = None,
     ) -> dict[str, Path]:
-        """Download 10m JP2 files for the given bands.  Returns band→local_path."""
-        uuid = extract_uuid(scene)
-        scene_id: str = scene.get("id", uuid)
+        """Download 10 m bands for one S2 scene via the SH Processing API.
+
+        Returns band → local single-band GeoTIFF path (UINT16, value ÷ 10000 = reflectance).
+        """
+        scene_id: str = scene.get("id", "unknown")
         out_dir = self._raw / "sentinel2" / scene_id
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        band_nodes = self._discover_s2_bands(uuid, bands)
-        result: dict[str, Path] = {}
+        # Return cached files if all requested bands already exist
+        cached = {b: out_dir / f"{b}.tif" for b in bands if (out_dir / f"{b}.tif").exists()}
+        if set(cached) == set(bands):
+            logger.info("Cache hit: all bands for %s", scene_id)
+            return cached
 
-        for i, (band, node_url) in enumerate(band_nodes.items()):
-            local = out_dir / f"{band}.jp2"
-            if local.exists():
-                logger.info("Cache hit: %s", local)
-                result[band] = local
-                continue
-            if progress_cb:
-                progress_cb(i, len(band_nodes), f"Downloading band {band} …")
-            self._stream_file(node_url, local)
-            result[band] = local
+        effective_bbox = bbox or self._bbox
+        if effective_bbox is None:
+            raise ValueError(
+                "bbox must be provided either at SceneDownloader construction or per call"
+            )
 
+        if progress_cb:
+            progress_cb(0, 3, "Requesting scene from Sentinel Hub…")
+
+        dt_str = scene.get("properties", {}).get("datetime", "")
+        t_from, t_to = _sensing_time_range(dt_str)
+
+        logger.info(
+            "SH request: scene=%s  window=%s → %s  bbox=%s",
+            scene_id[:40], t_from[:10], t_to[:10], effective_bbox,
+        )
+
+        if progress_cb:
+            progress_cb(1, 3, "Downloading GeoTIFF from Sentinel Hub…")
+
+        tif_bytes = self._sh_fetch(t_from, t_to, effective_bbox)
+
+        if progress_cb:
+            progress_cb(2, 3, "Extracting bands…")
+
+        result = _split_bands(tif_bytes, bands, out_dir)
+        logger.info("Saved %d band file(s) for %s", len(result), scene_id)
         return result
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    def _discover_s2_bands(self, uuid: str, bands: list[str]) -> dict[str, str]:
-        """Return band → download URL by walking the product Node tree."""
-        # Step 1: find the .SAFE root folder name
-        top_nodes = self._list_nodes(f"Products('{uuid}')/Nodes")
-        safe_node = next((n for n in top_nodes if n.get("Name", "").endswith(".SAFE")), None)
-        if not safe_node:
-            raise RuntimeError(f"No .SAFE folder found for product {uuid}")
-        safe = safe_node["Name"]
-
-        # Step 2: find the granule (L2A_T…) subfolder name
-        granule_nodes = self._list_nodes(
-            f"Products('{uuid}')/Nodes('{safe}')/Nodes('GRANULE')/Nodes"
-        )
-        if not granule_nodes:
-            raise RuntimeError(f"No granule found under {safe}/GRANULE")
-        granule = granule_nodes[0]["Name"]
-
-        # Step 3: list 10m JP2 files and match requested bands
-        r10_nodes = self._list_nodes(
-            f"Products('{uuid}')/Nodes('{safe}')/Nodes('GRANULE')"
-            f"/Nodes('{granule}')/Nodes('IMG_DATA')/Nodes('R10m')/Nodes"
-        )
-
-        band_urls: dict[str, str] = {}
-        for node in r10_nodes:
-            name: str = node.get("Name", "")
-            for band in bands:
-                if f"_{band}_" in name or name.endswith(f"_{band}.jp2"):
-                    band_urls[band] = (
-                        f"{self._dl}/Products('{uuid}')"
-                        f"/Nodes('{safe}')/Nodes('GRANULE')"
-                        f"/Nodes('{granule}')/Nodes('IMG_DATA')"
-                        f"/Nodes('R10m')/Nodes('{name}')/$value"
-                    )
-                    break
-
-        missing = set(bands) - set(band_urls)
-        if missing:
-            logger.warning("Bands not found in product %s: %s", uuid[:8], missing)
-        return band_urls
-
-    def _list_nodes(self, path: str) -> list[dict[str, Any]]:
-        resp = httpx.get(
-            f"{self._odata}/{path}",
+    def _sh_fetch(self, t_from: str, t_to: str, bbox: list[float]) -> bytes:
+        width, height = _bbox_pixels(bbox, resolution_m=10)
+        payload: dict[str, Any] = {
+            "input": {
+                "bounds": {
+                    "bbox": bbox,
+                    "properties": {"crs": "http://www.opengis.net/def/crs/OGC/1.3/CRS84"},
+                },
+                "data": [{
+                    "type": "sentinel-2-l2a",
+                    "dataFilter": {
+                        "timeRange": {"from": t_from, "to": t_to},
+                        "maxCloudCoverage": 100,
+                    },
+                }],
+            },
+            "output": {
+                "width": width,
+                "height": height,
+                "responses": [{
+                    "identifier": "default",
+                    "format": {
+                        "type": "image/tiff",
+                        "parameters": {"bits_per_sample": 16},
+                    },
+                }],
+            },
+            "evalscript": _EVALSCRIPT,
+        }
+        resp = httpx.post(
+            self._sh_url,
+            json=payload,
             headers=self._auth.auth_header(),
-            timeout=30.0,
+            timeout=180.0,
         )
-        resp.raise_for_status()
-        data = resp.json()
-        # OData v4 uses 'value'; some CDSE endpoints use 'result'
-        return data.get("value", data.get("result", []))  # type: ignore[return-value]
+        if not resp.is_success:
+            raise RuntimeError(
+                f"SH Processing API {resp.status_code}: {resp.text[:400]}"
+            )
+        return resp.content
 
-    def _stream_file(self, url: str, dest: Path) -> None:
-        with httpx.stream(
-            "GET", url,
-            headers=self._auth.auth_header(),
-            timeout=600.0,
-            follow_redirects=True,
-        ) as resp:
-            resp.raise_for_status()
-            total = int(resp.headers.get("content-length", 0))
-            written = 0
-            with open(dest, "wb") as fh:
-                for chunk in resp.iter_bytes(chunk_size=2 * 1024 * 1024):
-                    fh.write(chunk)
-                    written += len(chunk)
-            mb = written // 1_000_000
-            logger.info("Saved %s (%d MB%s)", dest.name, mb, f"/{total//1_000_000} MB" if total else "")
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _sensing_time_range(dt_str: str) -> tuple[str, str]:
+    """Return ISO (from, to) strings for a ±12 h window around dt_str."""
+    try:
+        dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+    except ValueError:
+        dt = datetime.now(tz=UTC) - timedelta(days=1)
+    fmt = "%Y-%m-%dT%H:%M:%SZ"
+    return (
+        (dt - timedelta(hours=12)).strftime(fmt),
+        (dt + timedelta(hours=12)).strftime(fmt),
+    )
+
+
+def _bbox_pixels(bbox: list[float], resolution_m: int = 10) -> tuple[int, int]:
+    """Approximate pixel count for a WGS84 bbox at the given resolution."""
+    w, s, e, n = bbox
+    lat_mid = (s + n) / 2
+    m_per_deg_lon = 111_320.0 * math.cos(math.radians(lat_mid))
+    m_per_deg_lat = 110_540.0
+    width = max(1, int((e - w) * m_per_deg_lon / resolution_m))
+    height = max(1, int((n - s) * m_per_deg_lat / resolution_m))
+    return width, height
+
+
+def _split_bands(tif_bytes: bytes, bands: list[str], out_dir: Path) -> dict[str, Path]:
+    """Write requested bands from a multi-band GeoTIFF as individual files."""
+    result: dict[str, Path] = {}
+    with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as tmp:
+        tmp.write(tif_bytes)
+        tmp_path = Path(tmp.name)
+    try:
+        with rasterio.open(tmp_path) as src:
+            for raster_idx, band_name in enumerate(_BAND_ORDER, start=1):
+                if band_name not in bands:
+                    continue
+                dest = out_dir / f"{band_name}.tif"
+                profile = src.profile.copy()
+                profile.update(count=1, compress="deflate", driver="GTiff")
+                arr = src.read(raster_idx)
+                with rasterio.open(dest, "w", **profile) as dst:
+                    dst.write(arr, 1)
+                result[band_name] = dest
+    finally:
+        tmp_path.unlink(missing_ok=True)
+    return result

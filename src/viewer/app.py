@@ -43,6 +43,7 @@ def run(settings: dict) -> None:
         odata_base=cdse_cfg["odata_base"],
         download_base=cdse_cfg["download_base"],
         raw_dir=raw_dir,
+        bbox=settings["aoi"]["bbox"],
     )
     catalog = SceneCatalog(
         catalog_path=Path(storage_cfg["catalog_file"]),
