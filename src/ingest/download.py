@@ -195,14 +195,19 @@ def _sensing_time_range(dt_str: str) -> tuple[str, str]:
     )
 
 
-def _bbox_pixels(bbox: list[float], resolution_m: int = 10) -> tuple[int, int]:
-    """Approximate pixel count for a WGS84 bbox at the given resolution."""
+def _bbox_pixels(
+    bbox: list[float], resolution_m: int = 10, max_dim: int = 2500
+) -> tuple[int, int]:
+    """Approximate pixel count for a WGS84 bbox at the given resolution.
+
+    Capped at max_dim (SH Processing API limit is 2500 per dimension).
+    """
     w, s, e, n = bbox
     lat_mid = (s + n) / 2
     m_per_deg_lon = 111_320.0 * math.cos(math.radians(lat_mid))
     m_per_deg_lat = 110_540.0
-    width = max(1, int((e - w) * m_per_deg_lon / resolution_m))
-    height = max(1, int((n - s) * m_per_deg_lat / resolution_m))
+    width = min(max_dim, max(1, int((e - w) * m_per_deg_lon / resolution_m)))
+    height = min(max_dim, max(1, int((n - s) * m_per_deg_lat / resolution_m)))
     return width, height
 
 
